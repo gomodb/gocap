@@ -1,0 +1,56 @@
+name: Benchmark Compare
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+
+# 需要给 Action 授予在 PR 下发评论的权限
+permissions:
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出当前 PR 分支
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: 收集 PR 分支性能数据
+        # 务必加上 -count=5 以上，给 benchstat 提供足够的统计样本
+        run: go test -run=^$ -bench=. -benchmem -count=5 ./... > pr_bench.txt
+
+      - name: 检出目标基础分支
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          clean: false
+
+      - name: 收集基础分支性能数据
+        run: go test -run=^$ -bench=. -benchmem -count=5 ./... > main_bench.txt
+
+      - name: 安装 benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: 生成对比报告
+        run: |
+          echo "REPORT<<EOF" >> $GITHUB_ENV
+          benchstat main_bench.txt pr_bench.txt >> $GITHUB_ENV || true
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: 在 PR 中回复结果
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### 🚀 Benchmark 对比报告 (`benchstat`)
+            ```text
+            ${{ env.REPORT }}
+            ```

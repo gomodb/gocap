@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - gocyclo
+    - dupl
+    - gosec
+    - misspell
+    - unparam
+    - ineffassign
+    - wsl_v5
+    - exptostd
+    - modernize
+    - nonamedreturns
+  
+  settings:
+    gosec:
+      excludes:
+        - G505
+        - G401
+        - G115
+
+formatters:
+  enable:
+    - gofumpt
+    - golines
