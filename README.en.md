@@ -1,5 +1,6 @@
 # gocap
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/gomodb/gocap)](https://pkg.go.dev/github.com/gomodb/gocap)
 English | [中文](README.md)
 
 A Go server-side implementation of [CAP](https://github.com/tiagozip/cap), a proof-of-work based CAPTCHA alternative. Supports pluggable storage, multi-protocol challenges (including RSW time-lock puzzles), and client-side instrumentation.

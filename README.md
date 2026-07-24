@@ -1,5 +1,6 @@
 # gocap
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/gomodb/gocap)](https://pkg.go.dev/github.com/gomodb/gocap)
 [English](README.en.md) | 中文
 
 Go 语言实现的 [CAP](https://github.com/tiagozip/cap) 服务端，一个基于工作量证明（PoW）的验证码替代方案。支持可插拔存储、多协议挑战格式（含 RSW 时间锁谜题）和客户端浏览器检测。
