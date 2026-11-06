@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"math/big"
@@ -473,7 +473,7 @@ func TestNewCapAndInstanceMethods(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -504,12 +504,17 @@ func TestNewCapErrors(t *testing.T) {
 	if _, err := NewCap(CapOptions{Secret: []byte("short")}); err == nil {
 		t.Fatal("expected short secret to fail")
 	}
-	// Format-2 without protocols
-	if _, err := NewCap(CapOptions{
+	// Format-2 without protocols now defaults to rsw (capjs-core behaviour).
+	c, err := NewCap(CapOptions{
 		Secret: []byte("meow-meow-meow-meow-dont-use-in-prod-meow-meow-meow-meow"),
 		Format: 2,
-	}); err == nil {
-		t.Fatal("expected format-2 without protocols to fail")
+	})
+	if err != nil {
+		t.Fatalf("expected format-2 without protocols to default to rsw, got %v", err)
+	}
+
+	if len(c.generateOpts.Protocols) != 1 || c.generateOpts.Protocols[0] != "rsw" {
+		t.Fatalf("expected default protocols [rsw], got %v", c.generateOpts.Protocols)
 	}
 }
 
@@ -601,7 +606,7 @@ func TestFormat1InstrumentationFlow(t *testing.T) {
 	// Submit without instrumentation → should fail with instr_missing
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -624,7 +629,8 @@ func TestFormat1InstrumentationBlocked(t *testing.T) {
 	secret := []byte("meow-meow-meow-meow-dont-use-in-prod-meow-meow-meow-meow")
 	store := NewMemoryStorage()
 
-	// With blockAutomatedBrowsers=false → should succeed
+	// With blockAutomatedBrowsers=false, a forged blocked marker is rejected
+	// (capjs-core 0.1.5 hardening).
 	capInstance, err := NewCap(CapOptions{
 		Secret:              secret,
 		Storage:             store,
@@ -654,18 +660,19 @@ func TestFormat1InstrumentationBlocked(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 		Blocked:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !result.Success {
-		t.Fatalf(
-			"expected success with blockAutomatedBrowsers=false, got reason: %s",
-			result.Reason,
-		)
+	if result.Success {
+		t.Fatal("expected failure with a forged blocked marker and blockAutomatedBrowsers=false")
+	}
+
+	if !errors.Is(result, ErrInstrFailed) {
+		t.Fatalf("expected ErrInstrFailed, got %s", result.Reason)
 	}
 
 	// With blockAutomatedBrowsers=true → should be rejected
@@ -698,7 +705,7 @@ func TestFormat1InstrumentationBlocked(t *testing.T) {
 
 	result2, err := capInstance2.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge2.Token,
-		Solutions: solutions2,
+		Solutions: SolutionsFromNumbers(solutions2),
 		Blocked:   true,
 	})
 	if err != nil {
@@ -744,7 +751,7 @@ func TestFormat1InstrumentationTimeout(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 		Timeout:   true,
 	})
 	if err != nil {
@@ -805,7 +812,7 @@ func TestFormat1InstrumentationValidResult(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 		Instr: &InstrPayload{
 			I:     meta.ID,
 			State: state,
@@ -1197,9 +1204,9 @@ func TestFormat2Sha256Pow(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: float64(nonce)},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: float64(nonce)},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1257,9 +1264,9 @@ func TestFormat2Rsw(t *testing.T) {
 	// We'll verify by checking that a mismatched solution is rejected
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "rsw", Y: "wrong-y-value"},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Y: "wrong-y-value"},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1338,16 +1345,15 @@ func TestFormat2Instrumentation(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
+		Solutions: SolutionsFromObjects([]V2Solution{
 			{
-				Protocol: "instrumentation",
-				Instr: map[string]any{
-					"i":     meta.ID,
-					"state": state,
-					"ts":    time.Now().UnixMilli(),
+				Instr: &InstrPayload{
+					I:     meta.ID,
+					State: state,
+					Ts:    time.Now().UnixMilli(),
 				},
 			},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1442,14 +1448,14 @@ func TestFormat2MultipleProtocols(t *testing.T) {
 	// Use wrong RSW solution to test that mismatches are detected
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: float64(nonce)},
-			{Protocol: "rsw", Y: "wrong"},
-			{Protocol: "instrumentation", Instr: map[string]any{
-				"i":     meta.ID,
-				"state": state,
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: float64(nonce)},
+			{Y: "wrong"},
+			{Instr: &InstrPayload{
+				I:     meta.ID,
+				State: state,
 			}},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1537,7 +1543,7 @@ func TestChallengeScope(t *testing.T) {
 
 	result, err := wrongScopeCap.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1560,7 +1566,7 @@ func TestChallengeScope(t *testing.T) {
 
 	result, err = correctScopeCap.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1614,7 +1620,7 @@ func TestConsumeNonce(t *testing.T) {
 	// First use should succeed
 	result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{ConsumeNonce: consumeNonce})
 	if err != nil {
 		t.Fatal(err)
@@ -1627,7 +1633,7 @@ func TestConsumeNonce(t *testing.T) {
 	// Second use (replay) should fail
 	result, err = validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{ConsumeNonce: consumeNonce})
 	if err != nil {
 		t.Fatal(err)
@@ -1667,7 +1673,7 @@ func TestConsumeNonceError(t *testing.T) {
 
 	result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{ConsumeNonce: errConsume})
 	if err != nil {
 		t.Fatal(err)
@@ -1727,7 +1733,7 @@ func TestSignToken(t *testing.T) {
 
 	result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{
 		SignToken: customSigner,
 	})
@@ -1774,7 +1780,7 @@ func TestExpiredChallenge(t *testing.T) {
 
 	result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1796,7 +1802,7 @@ func TestValidateInvalidBody(t *testing.T) {
 
 	// Missing token
 	result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
-		Solutions: []int64{1, 2, 3},
+		Solutions: SolutionsFromNumbers([]int64{1, 2, 3}),
 	}, ValidateOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1832,7 +1838,7 @@ func TestValidateInvalidBody(t *testing.T) {
 		secret,
 		ValidateBody{ //nolint:gosec
 			Token:     "not.a.jwt.token",
-			Solutions: []int64{1},
+			Solutions: SolutionsFromNumbers([]int64{1}),
 		},
 		ValidateOptions{},
 	)
@@ -1875,7 +1881,7 @@ func TestNonceZeroIsValid(t *testing.T) {
 		if strings.HasPrefix(hash, target) {
 			result, err := validateChallengeWithContext(context.Background(), secret, ValidateBody{
 				Token:     challenge.Token,
-				Solutions: []int64{0},
+				Solutions: SolutionsFromNumbers([]int64{0}),
 			}, ValidateOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -1925,8 +1931,8 @@ func TestFormat2MismatchedSolutions(t *testing.T) {
 
 	// Wrong number of solutions
 	result, err := validateChallengeV2(context.Background(), secret, ValidateBody{
-		Token: challenge.Token,
-		V2Sol: []V2Solution{},
+		Token:     challenge.Token,
+		Solutions: SolutionsFromObjects([]V2Solution{}),
 	}, payload, ValidateOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1966,7 +1972,7 @@ func TestRedeemChallengeDetectsFormat(t *testing.T) {
 
 	f1Result, err := f1Cap.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     f1Challenge.Token,
-		Solutions: f1Solutions,
+		Solutions: SolutionsFromNumbers(f1Solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2005,9 +2011,9 @@ func TestRedeemChallengeDetectsFormat(t *testing.T) {
 
 	f2Result, err := f2Cap.RedeemChallenge(context.Background(), ValidateBody{
 		Token: f2Challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: float64(nonce)},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: float64(nonce)},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2084,7 +2090,7 @@ func TestValidateResultErrorsIs(t *testing.T) {
 	// Test: RedeemChallenge with missing token
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     "",
-		Solutions: []int64{1},
+		Solutions: SolutionsFromNumbers([]int64{1}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2117,7 +2123,7 @@ func TestValidateResultErrorsIs(t *testing.T) {
 	// Test: RedeemChallenge with invalid JWT
 	result, err = capInstance.RedeemChallenge(context.Background(), ValidateBody{ //nolint:gosec
 		Token:     "not-a-valid.jwt.token",
-		Solutions: []int64{1},
+		Solutions: SolutionsFromNumbers([]int64{1}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2134,7 +2140,7 @@ func TestValidateResultErrorsIs(t *testing.T) {
 	// Test: RedeemChallenge with wrong solution count
 	result, err = capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     challenge.Token,
-		Solutions: []int64{1, 2, 3},
+		Solutions: SolutionsFromNumbers([]int64{1, 2, 3}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2245,9 +2251,9 @@ func TestFormat2Sha256PowStringNonce(t *testing.T) {
 	// Submit nonce as string (JSON unmarshalled from client)
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: strconv.FormatInt(nonce, 10)},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: strconv.FormatInt(nonce, 10)},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2257,12 +2263,17 @@ func TestFormat2Sha256PowStringNonce(t *testing.T) {
 		t.Fatalf("expected success with string nonce, got reason: %s", result.Reason)
 	}
 
-	// Wrong string nonce
+	// Wrong string nonce (pick one that provably does not satisfy the target)
+	wrongNumeric := "9999999999999"
+	for strings.HasPrefix(sha256Hex(salt+wrongNumeric), target) {
+		wrongNumeric += "0"
+	}
+
 	result, err = capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: "9999999999999"},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: wrongNumeric},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2276,19 +2287,25 @@ func TestFormat2Sha256PowStringNonce(t *testing.T) {
 		t.Fatalf("expected ErrInvalidSolution, got %s", result.Reason)
 	}
 
-	// Non-parseable string nonce
+	// Arbitrary string nonces are hashed verbatim (JS semantics), so pick one
+	// that provably does not satisfy the target.
+	wrong := "not-a-number"
+	for strings.HasPrefix(sha256Hex(salt+wrong), target) {
+		wrong += "x"
+	}
+
 	result, err = capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "sha256-pow", Nonce: "not-a-number"},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Nonce: wrong},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if result.Success {
-		t.Fatal("expected failure with bad string nonce")
+		t.Fatal("expected failure with wrong string nonce")
 	}
 
 	if !errors.Is(result, ErrInvalidSolution) {
@@ -2323,9 +2340,9 @@ func TestFormat2InstrumentationBlocked(t *testing.T) {
 	// Blocked + blockAutomatedBrowsers=true → rejected
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "instrumentation", Blocked: ptrBool(true)},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Blocked: new(true)},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2362,9 +2379,9 @@ func TestFormat2InstrumentationTimeout(t *testing.T) {
 	// Timeout → rejected
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "instrumentation", Timeout: ptrBool(true)},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Timeout: new(true)},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2428,9 +2445,9 @@ func TestFormat2RswValid(t *testing.T) {
 	// Valid RSW solution
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token: challenge.Token,
-		V2Sol: []V2Solution{
-			{Protocol: "rsw", Y: yHex},
-		},
+		Solutions: SolutionsFromObjects([]V2Solution{
+			{Y: yHex},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2468,7 +2485,7 @@ func TestSignTokenError(t *testing.T) {
 
 	_, err = validateChallengeWithContext(context.Background(), secret, ValidateBody{
 		Token:     challenge.Token,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	}, ValidateOptions{SignToken: errSigner})
 	if err == nil {
 		t.Fatal("expected error from signToken")
@@ -2609,7 +2626,7 @@ func TestFormat1InstrCorrupted(t *testing.T) {
 
 	result, err := capInstance.RedeemChallenge(context.Background(), ValidateBody{
 		Token:     tamperedToken,
-		Solutions: solutions,
+		Solutions: SolutionsFromNumbers(solutions),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2622,12 +2639,6 @@ func TestFormat1InstrCorrupted(t *testing.T) {
 	if !errors.Is(result, ErrInstrCorrupted) {
 		t.Fatalf("expected ErrInstrCorrupted, got %s", result.Reason)
 	}
-}
-
-// ─── Helper ─────────────────────────────────────────────────────────────────
-
-func ptrBool(b bool) *bool {
-	return &b
 }
 
 // ─── Coverage gap: FastRnd error path ──────────────────────────────────────

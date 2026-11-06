@@ -2,7 +2,7 @@ package gocap
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +23,15 @@ func validateChallengeWithContext(
 		return res(ErrMissingToken), nil
 	}
 
-	if body.Solutions == nil {
+	if body.Solutions.IsZero() {
 		return res(ErrMissingSolutions), nil
 	}
+
+	if body.Solutions.Objects != nil {
+		return res(ErrInvalidSolutions), nil
+	}
+
+	solutions := body.Solutions.Numbers
 
 	payload := jwtVerify(body.Token, secret)
 	if payload == nil {
@@ -46,18 +52,19 @@ func validateChallengeWithContext(
 		return r, nil
 	}
 
-	if int64(len(body.Solutions)) != c {
+	if int64(len(solutions)) != c {
 		return res(ErrInvalidSolutions), nil
 	}
 
 	// Verify PoW solutions
-	if r := verifyPoW1(body.Token, body.Solutions, int(c), int(s), int(d)); !r.Success {
+	if r := verifyPoW1(body.Token, solutions, int(c), int(s), int(d)); !r.Success {
 		return r, nil
 	}
 
 	// Validate instrumentation if present
-	if r := validateFormat1Instr(payload, body, secret); !r.Success {
-		return r, nil
+	instrRes := validateFormat1Instr(payload, body, secret)
+	if !instrRes.Success {
+		return instrRes, nil
 	}
 
 	// Consume nonce (replay protection)
@@ -65,7 +72,17 @@ func validateChallengeWithContext(
 		return r, nil
 	}
 
-	return issueValidationToken(payload, opts)
+	result, err := issueValidationToken(payload, opts)
+	if err != nil {
+		return ValidateResult{}, err
+	}
+
+	result.RiskFlags = instrRes.RiskFlags
+	if result.RiskFlags == nil {
+		result.RiskFlags = []string{}
+	}
+
+	return result, nil
 }
 
 // validateChallengeV2 validates a format-2 multi-protocol challenge.
@@ -104,27 +121,52 @@ func validateChallengeV2(
 
 	expected := expectedWrapper.Expected
 
-	solutions := body.V2Sol
+	if body.Solutions.IsZero() {
+		return res(ErrMissingSolutions), nil
+	}
+
+	solutions := body.Solutions.Objects
+	if solutions == nil {
+		// A number array is a valid shape for format-1, but not for a
+		// format-2 token. capjs-core reports invalid_solutions on a length
+		// mismatch and invalid_solution otherwise.
+		if len(body.Solutions.Numbers) != len(expected) {
+			return res(ErrInvalidSolutions), nil
+		}
+
+		return res(ErrInvalidSolution), nil
+	}
+
 	if len(solutions) != len(expected) {
 		return res(ErrInvalidSolutions), nil
 	}
 
-	for i, e := range expected {
-		s := solutions[i]
-		if s.Protocol != e.Protocol {
-			return res(ErrInvalidSolution), nil
-		}
+	riskFlags := make([]string, 0, len(expected))
 
-		if r := validateV2ProtocolSolution(e, s); !r.Success {
+	for i, e := range expected {
+		r := validateV2ProtocolSolution(e, solutions[i])
+		if !r.Success {
 			return r, nil
 		}
+
+		riskFlags = append(riskFlags, r.RiskFlags...)
 	}
 
 	if r := consumeNonce(ctx, opts.ConsumeNonce, body.Token, exp); !r.Success {
 		return r, nil
 	}
 
-	return issueValidationToken(payload, opts)
+	result, err := issueValidationToken(payload, opts)
+	if err != nil {
+		return ValidateResult{}, err
+	}
+
+	result.RiskFlags = riskFlags
+	if result.RiskFlags == nil {
+		result.RiskFlags = []string{}
+	}
+
+	return result, nil
 }
 
 // ─── Sub-validators ─────────────────────────────────────────────────────────
@@ -161,10 +203,6 @@ func verifyPoW1(token string, solutions []int64, c, s, d int) ValidateResult {
 	tokenFnv := fnv1a(token)
 
 	for i := range c {
-		if solutions[i] < 0 {
-			return res(ErrInvalidSolutions)
-		}
-
 		idxStr := strconv.Itoa(i + 1)
 		saltSeed := fnv1aResume(tokenFnv, idxStr)
 		targetSeed := fnv1aResume(saltSeed, "d")
@@ -243,6 +281,8 @@ func validateV2ProtocolSolution(e v2ExpectedEntry, s V2Solution) ValidateResult 
 		return validateV2Sha256Pow(e, s)
 	case "rsw":
 		return validateV2Rsw(e, s)
+	case "hashwx":
+		return validateV2Hashwx(e, s)
 	case "instrumentation":
 		return validateV2Instrumentation(e, s)
 	default:
@@ -251,27 +291,14 @@ func validateV2ProtocolSolution(e v2ExpectedEntry, s V2Solution) ValidateResult 
 }
 
 func validateV2Sha256Pow(e v2ExpectedEntry, s V2Solution) ValidateResult {
-	nonce, ok := s.Nonce.(float64)
+	nonce, ok := jsValueString(s.Nonce)
 	if !ok {
-		nonceStr, ok2 := s.Nonce.(string)
-		if !ok2 {
-			return res(ErrInvalidSolution)
-		}
+		return res(ErrInvalidSolution)
+	}
 
-		nonceInt, err := strconv.ParseInt(nonceStr, 10, 64)
-		if err != nil {
-			return res(ErrInvalidSolution)
-		}
-
-		h := sha256Hex(e.Salt + strconv.FormatInt(nonceInt, 10))
-		if !strings.HasPrefix(h, e.Target) {
-			return res(ErrInvalidSolution)
-		}
-	} else {
-		h := sha256Hex(e.Salt + strconv.FormatInt(int64(nonce), 10))
-		if !strings.HasPrefix(h, e.Target) {
-			return res(ErrInvalidSolution)
-		}
+	h := sha256Hex(e.Salt + nonce)
+	if !strings.HasPrefix(h, e.Target) {
+		return res(ErrInvalidSolution)
 	}
 
 	return ValidateResult{Success: true}
@@ -299,7 +326,7 @@ func validateV2Instrumentation(e v2ExpectedEntry, s V2Solution) ValidateResult {
 			return failInstrErr(ErrInstrAutomatedBrowser)
 		}
 
-		return ValidateResult{Success: true}
+		return failInstrErr(ErrInstrFailed)
 	}
 
 	if s.Timeout != nil && *s.Timeout {
@@ -307,26 +334,29 @@ func validateV2Instrumentation(e v2ExpectedEntry, s V2Solution) ValidateResult {
 	}
 
 	if s.Instr != nil {
-		instrData, err := json.Marshal(s.Instr)
-		if err != nil {
-			return failInstrErr(ErrInstrFailed)
+		vr := verifyInstrumentationResult(
+			e.Instrumentation,
+			&InstrumentationResult{
+				I:     s.Instr.I,
+				State: s.Instr.State,
+				P:     s.Instr.P,
+				VP:    s.Instr.VP,
+				Ts:    s.Instr.Ts,
+			},
+		)
+		if !vr.Valid {
+			r := ValidateResult{
+				Success:   false,
+				Reason:    vr.Reason,
+				InstrErr:  true,
+				BlockedBy: vr.BlockedBy,
+			}
+			r.err = instrSentinel(vr.Reason)
+
+			return r
 		}
 
-		var instrPayload InstrPayload
-		if err := json.Unmarshal(instrData, &instrPayload); err != nil {
-			return failInstrErr(ErrInstrFailed)
-		}
-
-		valid, reason := VerifyInstrumentationResult(e.Instrumentation, &InstrumentationResult{
-			I:     instrPayload.I,
-			State: instrPayload.State,
-			Ts:    instrPayload.Ts,
-		})
-		if !valid {
-			return ValidateResult{Success: false, Reason: reason, InstrErr: true}
-		}
-
-		return ValidateResult{Success: true}
+		return ValidateResult{Success: true, RiskFlags: vr.RiskFlags}
 	}
 
 	return failInstrErr(ErrInstrMissing)
@@ -339,7 +369,7 @@ func validateInstrumentationBody(meta *InstrumentationMeta, body ValidateBody) V
 			return failInstrErr(ErrInstrAutomatedBrowser)
 		}
 
-		return ValidateResult{Success: true}
+		return failInstrErr(ErrInstrFailed)
 	}
 
 	if body.Timeout {
@@ -347,16 +377,29 @@ func validateInstrumentationBody(meta *InstrumentationMeta, body ValidateBody) V
 	}
 
 	if body.Instr != nil {
-		valid, reason := VerifyInstrumentationResult(meta, &InstrumentationResult{
-			I:     body.Instr.I,
-			State: body.Instr.State,
-			Ts:    body.Instr.Ts,
-		})
-		if !valid {
-			return ValidateResult{Success: false, Reason: reason, InstrErr: true}
+		vr := verifyInstrumentationResult(
+			meta,
+			&InstrumentationResult{
+				I:     body.Instr.I,
+				State: body.Instr.State,
+				P:     body.Instr.P,
+				VP:    body.Instr.VP,
+				Ts:    body.Instr.Ts,
+			},
+		)
+		if !vr.Valid {
+			r := ValidateResult{
+				Success:   false,
+				Reason:    vr.Reason,
+				InstrErr:  true,
+				BlockedBy: vr.BlockedBy,
+			}
+			r.err = instrSentinel(vr.Reason)
+
+			return r
 		}
 
-		return ValidateResult{Success: true}
+		return ValidateResult{Success: true, RiskFlags: vr.RiskFlags}
 	}
 
 	return failInstrErr(ErrInstrMissing)
@@ -374,12 +417,15 @@ func issueValidationToken(payload map[string]any, opts ValidateOptions) (Validat
 	var scopePtr *string
 
 	if scope, ok := payload["sk"].(string); ok && scope != "" {
-		scopeCopy := scope
-		scopePtr = &scopeCopy
+		scopePtr = new(scope)
 	}
 
-	iat, _ := asInt64(payload["iat"])
-	iatPtr := &iat
+	iat, iatOK := asInt64(payload["iat"])
+
+	var iatPtr *int64
+	if iatOK {
+		iatPtr = new(iat)
+	}
 
 	if opts.SignToken != nil {
 		signed, err := opts.SignToken(
@@ -440,12 +486,22 @@ func issueValidationToken(payload map[string]any, opts ValidateOptions) (Validat
 		); err != nil {
 			return ValidateResult{}, err
 		}
+
+		// Also index the hashed lookup key so callers can follow the
+		// upstream tokenKey privacy pattern and validate with either form.
+		if err := opts.Storage.SetValidationToken(
+			ctx,
+			tokenKey,
+			time.UnixMilli(tokenExpires),
+		); err != nil {
+			return ValidateResult{}, err
+		}
 	}
 
 	return ValidateResult{
 		Success:  true,
 		Token:    token,
-		TokenKey: &tokenKey,
+		TokenKey: new(tokenKey),
 		Expires:  tokenExpires,
 		Scope:    scopePtr,
 		Iat:      iatPtr,

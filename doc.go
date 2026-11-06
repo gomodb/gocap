@@ -19,7 +19,7 @@
 //	// Verify the client's PoW solutions
 //	result, err := cap.RedeemChallenge(ctx, gocap.ValidateBody{
 //	    Token:     challenge.Token,
-//	    Solutions: clientSolutions, // []int64 from the client
+//	    Solutions: gocap.SolutionsFromNumbers(clientSolutions), // []int64 from the client
 //	})
 //	if errors.Is(result, gocap.ErrInvalidSolution) {
 //	    // PoW verification failed
@@ -39,8 +39,37 @@
 //
 // Format-2 (opt-in): A multi-protocol challenge framework supporting:
 //   - sha256-pow: Standard PoW with random salt per item
-//   - rsw: Time-lock puzzles based on repeated squaring (quantum-resistant)
-//   - instrumentation: Client-side browser integrity checks
+//   - rsw: Time-lock puzzles based on repeated squaring
+//   - hashwx: GPU-resistant PoW with a freshly generated hash function per
+//     block (the current capjs-core default for new standalone keys)
+//   - instrumentation: Client-side browser integrity checks, including the
+//     probe vector and server-side automation detection
+//
+// Format-2 request bodies accept the official widget shape: solutions are
+// sent in the "solutions" array as protocol-specific objects.
+//
+// # Recommended Configuration
+//
+// For new deployments, prefer format-2 with the "hashwx" and "instrumentation"
+// protocols. HashWX is the most GPU-resistant PoW in Cap, and instrumentation
+// adds browser-environment checks. The library defaults are intentionally
+// unchanged: format-1 uses sha256-pow, and format-2 defaults to ["rsw"] when
+// Protocols is empty.
+//
+//	cap, err := gocap.NewCap(gocap.CapOptions{
+//	    Secret:             secret,
+//	    Format:             2,
+//	    Protocols:          []string{"hashwx", "instrumentation"},
+//	    HashwxDifficulty:   1_000_000,
+//	    InstrumentationOpts: &gocap.InstrumentationOptions{
+//	        BlockAutomatedBrowsers: true,
+//	    },
+//	})
+//
+// Call HashwxReady at startup to compile the embedded HashWX wasm before the
+// first request. Use ConsumeNonce (for example a Redis SET NX EX) for replay
+// protection. RSW is deprecated upstream; SHA-256 remains available for
+// clients without WebAssembly.
 //
 // # Sentinel Errors
 //

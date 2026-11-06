@@ -195,7 +195,7 @@ func main() {
  // solutions 由客户端 PoW 计算后提交
  result, err := cap.RedeemChallenge(ctx, gocap.ValidateBody{
   Token:     challenge.Token,
-  Solutions: []int64{1, 2, 3}, // 实际值来自客户端解答
+  Solutions: gocap.SolutionsFromNumbers([]int64{1, 2, 3}), // 实际值来自客户端解答
  })
  if err != nil {
   log.Fatal(err)

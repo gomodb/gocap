@@ -27,3 +27,8 @@ formatters:
   enable:
     - gofumpt
     - golines
+  exclusions:
+    paths:
+      # Instrumentation embeds generated JavaScript with long string literals
+      # that golines cannot split without changing the emitted script.
+      - instrumentation.go

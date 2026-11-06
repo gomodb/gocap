@@ -8,7 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 )
 
@@ -211,15 +211,23 @@ func jwtVerify(token string, secret []byte) map[string]any {
 
 	firstDot := -1
 	lastDot := -1
+	dots := 0
 
 	for i := 0; i < len(token); i++ {
 		if token[i] == '.' {
+			dots++
+
 			if firstDot == -1 {
 				firstDot = i
 			}
 
 			lastDot = i
 		}
+	}
+
+	// capjs-core requires exactly three JWT segments (header.payload.signature).
+	if dots != 2 {
+		return nil
 	}
 
 	if firstDot < 1 || lastDot == firstDot {

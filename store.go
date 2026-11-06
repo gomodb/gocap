@@ -35,9 +35,9 @@ type Storage interface {
 // Suitable for development and testing; for production, use a persistent
 // backend via the Storage interface.
 type MemoryStorage struct {
-	mu               sync.RWMutex
 	challengeTokens  map[string]time.Time
 	validationTokens map[string]time.Time
+	mu               sync.RWMutex
 }
 
 // NewMemoryStorage creates a new in-memory Storage implementation.

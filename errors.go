@@ -18,8 +18,8 @@ var (
 	// ErrExpired is returned when the challenge or validation token has
 	// exceeded its time-to-live.
 	ErrExpired = errors.New("expired")
-	// ErrInvalidSolutions is returned when the number of solutions doesn't
-	// match the challenge count or a solution is negative.
+	// ErrInvalidSolutions is returned when the solutions array is missing or
+	// its length doesn't match the challenge count.
 	ErrInvalidSolutions = errors.New("invalid_solutions")
 	// ErrInvalidSolution is returned when a PoW solution doesn't produce
 	// a hash with the required target prefix.
@@ -60,14 +60,17 @@ var (
 	// ErrInstrMissing is returned when instrumentation is required but
 	// no instrumentation result was provided.
 	ErrInstrMissing = errors.New("instr_missing")
+	// ErrInstrProbeMissing is returned when blockAutomatedBrowsers is enabled
+	// but the client did not send a browser probe vector.
+	ErrInstrProbeMissing = errors.New("instr_probe_missing")
 	// ErrShortSecret is returned by NewCap when Secret is shorter than 16 bytes.
 	ErrShortSecret = errors.New("secret must be at least 16 bytes")
-	// ErrFormat2NoProtocols is returned by NewCap when Format is 2 but no
-	// protocols are specified.
-	ErrFormat2NoProtocols = errors.New("format-2 requires at least one protocol")
 	// ErrRSWBitsMustBeEven is returned by GenerateRswKeypair when bits is odd.
 	ErrRSWBitsMustBeEven = errors.New("rsw bits must be even")
 	// ErrRSWKeypairRequired is returned when format-2 rsw protocol is used
 	// without providing a keypair.
 	ErrRSWKeypairRequired = errors.New("format-2 rsw requires opts.Keypair")
+	// ErrHashwxUnavailable is returned when the embedded HashWX module cannot
+	// be initialized or executed.
+	ErrHashwxUnavailable = errors.New("hashwx_unavailable")
 )

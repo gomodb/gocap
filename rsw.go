@@ -30,17 +30,18 @@ type SerializedRswKeypair struct {
 // RswMinter creates RSW time-lock puzzle challenges using repeated squaring.
 // Build one with BuildRswMinter and reuse it for multiple Mint calls.
 type RswMinter struct {
-	N            *big.Int
-	T            int
-	G            *big.Int
-	H            *big.Int
-	ModulusBytes int
-	N_hex        string
-	G_hex        string
-	H_hex        string
+	N *big.Int
+	G *big.Int
+	H *big.Int
 
-	p *big.Int
-	q *big.Int
+	p     *big.Int
+	q     *big.Int
+	N_hex string
+	G_hex string
+	H_hex string
+
+	T            int
+	ModulusBytes int
 }
 
 // RswMintResult is the output of a single RSW mint operation.

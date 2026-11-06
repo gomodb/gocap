@@ -188,7 +188,7 @@ func main() {
  // solutions are submitted by the client after solving the PoW
  result, err := cap.RedeemChallenge(ctx, gocap.ValidateBody{
   Token:     challenge.Token,
-  Solutions: []int64{1, 2, 3}, // actual values come from the client
+  Solutions: gocap.SolutionsFromNumbers([]int64{1, 2, 3}), // actual values come from the client
  })
  if err != nil {
   log.Fatal(err)
